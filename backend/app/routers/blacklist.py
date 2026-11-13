@@ -23,11 +23,22 @@ def list_entries(
     page: int = 1,
     size: int = 20,
 ) -> PageResult[dict]:
-    """按策略编号与状态过滤反爬对抗列表；没有数据时返回空页，不报错。"""
+    """按策略编号与状态过滤反爬对抗列表；没有数据时返回空页，不报错。
+
+    列表同时返回配置阻断原因：UA 不足三种、Referer 非首页、验证码识别未配置的错误配置
+    不会被显示为可启用。
+    """
     if size > 200:
         raise HTTPException(status_code=400, detail="每页最多 200 条，请缩小分页范围")
     items, total = service.list_entries(keyword=keyword, status=status, page=page, size=size)
     return PageResult(items=items, total=total, page=page, size=size)
+
+
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出反爬对抗清单：返回当前过滤条件下的全量数据。"""
+    items, total = service.list_entries(page=1, size=10000)
+    return {"module": "blacklist", "total": total, "items": items}
 
 
 @router.get("/{entry_id}", response_model=dict)
@@ -52,14 +63,7 @@ def create_entry(payload: EntryPayload) -> ActionResult:
 def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     """对单条对抗策略执行提交策略测试、启用策略、标记失效；不允许的动作会被拦下并说明原因。"""
     action = str(payload.values.get("action") or "").strip()
-    entry, message = service.run_action(entry_id, action)
+    entry, message = service.run_action(entry_id, action, payload.values)
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出反爬对抗清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "blacklist", "total": total, "items": items}

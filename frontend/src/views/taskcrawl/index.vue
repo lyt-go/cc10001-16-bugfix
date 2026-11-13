@@ -31,26 +31,42 @@
       <thead>
         <tr>
           <th v-for="column in columns" :key="column">{{ column }}</th>
+          <th>绑定凭证</th>
+          <th>绑定策略</th>
+          <th>会话状态</th>
+          <th>任务卡状态</th>
+          <th>不可启动原因</th>
           <th>可执行动作</th>
         </tr>
       </thead>
       <tbody>
         <tr v-for="row in rows" :key="String(row.id)">
           <td v-for="column in columns" :key="column">{{ row[column] ?? '—' }}</td>
+          <td>{{ binding(row).凭证编号 ?? '—' }}（{{ binding(row).凭证状态 ?? '—' }}）</td>
+          <td>{{ policy(row).策略编号 ?? '—' }}（{{ policy(row).策略状态 ?? '—' }}）</td>
+          <td :class="['status-cell', row['会话状态'] === '可用' ? 'status-ok' : 'status-bad']">
+            {{ row['会话状态'] ?? '—' }}
+          </td>
+          <td :class="['status-cell', row['任务卡状态'] === '可启动' ? 'status-ok' : 'status-bad']">
+            {{ row['任务卡状态'] ?? '—' }}
+          </td>
+          <td class="reason-cell">{{ row['不可启动原因'] || '—' }}</td>
           <td class="row-actions">
             <button
-              v-for="action in actions"
+              v-for="action in rowActions(row)"
               :key="action"
               class="link"
               type="button"
+              :disabled="action === '启动任务' && !row['可启动']"
               @click="runAction(action, row)"
             >
               {{ action }}
             </button>
+            <span v-if="!rowActions(row).length" class="muted">—</span>
           </td>
         </tr>
         <tr v-if="!rows.length">
-          <td :colspan="columns.length + 1" class="empty-state">暂无采集任务数据，可先登记采集任务</td>
+          <td :colspan="columns.length + 6" class="empty-state">暂无采集任务数据，可先登记采集任务</td>
         </tr>
       </tbody>
     </table>
@@ -63,23 +79,50 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
 
 import { request } from '@/api/client'
 
-type Row = Record<string, string | number | null>
+type Row = Record<string, any>
 
 const ENDPOINT = '/api/taskcrawl'
 const columns = ["任务编号", "采集源名称", "规则编号", "调度周期", "增量字段", "批次大小", "起始水位", "截止水位"]
-const actions = ["提交调度", "启动任务", "终止任务"]
-const statuses = ["草稿", "待调度", "执行中", "已完成", "已终止"]
-const stats = [{"label": "采集任务总数", "value": 0}, {"label": "执行中任务", "value": 0}, {"label": "已完成任务", "value": 0}]
+// 任务自身的状态机；启动是否放行还要看后端返回的会话结论。
+const statusActions: Record<string, string[]> = {
+  草稿: ["提交调度"],
+  待调度: ["启动任务", "终止任务"],
+  执行中: ["终止任务"],
+  已完成: [],
+  已终止: ["提交调度"],
+}
 
 const rows = ref<Row[]>([])
 const total = ref(0)
 const errorMessage = ref('')
 const filters = ref<Record<string, string>>({})
 const filterFields = columns.slice(0, 3)
+
+const stats = reactive([
+  { label: '采集任务总数', value: 0 },
+  { label: '可启动任务', value: 0 },
+  { label: '不可启动任务', value: 0 },
+])
+
+function rowActions(row: Row): string[] {
+  const served = row['可执行动作']
+  if (Array.isArray(served)) {
+    return served.map(String)
+  }
+  return statusActions[String(row.status ?? '')] ?? []
+}
+
+function binding(row: Row): Record<string, any> {
+  return (row['会话结论']?.登录凭证 ?? {}) as Record<string, any>
+}
+
+function policy(row: Row): Record<string, any> {
+  return (row['会话结论']?.反爬策略 ?? {}) as Record<string, any>
+}
 
 function resetFilters() {
   filters.value = {}
@@ -99,10 +142,11 @@ async function runAction(action: string, row: Row) {
   try {
     const response = await request(`${ENDPOINT}/${row.id}/actions`, {
       method: 'POST',
-      body: JSON.stringify({ action }),
+      body: JSON.stringify({ values: { action } }),
     })
-    if (!response.ok) {
-      throw new Error('采集任务动作未生效，请稍后重试')
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.message || '采集任务动作未生效，请稍后重试')
     }
     await reload()
   } catch (error) {
@@ -119,8 +163,12 @@ async function reload() {
       throw new Error('采集任务列表读取失败')
     }
     const payload = await response.json()
-    rows.value = payload.items ?? []
-    total.value = payload.total ?? rows.value.length
+    const items: Row[] = payload.items ?? []
+    rows.value = items
+    total.value = payload.total ?? items.length
+    stats[0].value = total.value
+    stats[1].value = items.filter((row) => Boolean(row['可启动'])).length
+    stats[2].value = items.filter((row) => !row['可启动']).length
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '采集任务列表读取失败'
   }

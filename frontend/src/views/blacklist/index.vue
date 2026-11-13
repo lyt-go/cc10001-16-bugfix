@@ -31,15 +31,21 @@
       <thead>
         <tr>
           <th v-for="column in columns" :key="column">{{ column }}</th>
+          <th>状态</th>
+          <th>配置阻断原因</th>
+          <th>测试失败原因</th>
           <th>可执行动作</th>
         </tr>
       </thead>
       <tbody>
         <tr v-for="row in rows" :key="String(row.id)">
           <td v-for="column in columns" :key="column">{{ row[column] ?? '—' }}</td>
+          <td :class="['status-cell', statusClass(row)]">{{ row.status ?? '—' }}</td>
+          <td class="reason-cell">{{ configBlockers(row).join('；') || '—' }}</td>
+          <td class="reason-cell">{{ row['测试失败原因'] || '—' }}</td>
           <td class="row-actions">
             <button
-              v-for="action in actions"
+              v-for="action in rowActions(row)"
               :key="action"
               class="link"
               type="button"
@@ -47,10 +53,11 @@
             >
               {{ action }}
             </button>
+            <span v-if="!rowActions(row).length" class="muted">—</span>
           </td>
         </tr>
         <tr v-if="!rows.length">
-          <td :colspan="columns.length + 1" class="empty-state">暂无反爬对抗数据，可先登记对抗策略</td>
+          <td :colspan="columns.length + 4" class="empty-state">暂无反爬对抗数据，可先登记对抗策略</td>
         </tr>
       </tbody>
     </table>
@@ -63,7 +70,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
 
 import { request } from '@/api/client'
 
@@ -71,15 +78,43 @@ type Row = Record<string, string | number | null>
 
 const ENDPOINT = '/api/blacklist'
 const columns = ["策略编号", "目标域名", "UA模拟列表", "Referer配置", "随机延迟范围", "IP轮换策略", "验证码识别", "Cookie种子"]
-const actions = ["提交策略测试", "启用策略", "标记失效"]
-const statuses = ["草稿", "策略测试中", "已启用", "已失效"]
-const stats = [{"label": "对抗策略总数", "value": 0}, {"label": "已启用策略", "value": 0}, {"label": "策略测试中", "value": 0}]
+// 草稿与已失效状态只能先提交策略测试，测试通过后才允许启用。
+const statusActions: Record<string, string[]> = {
+  草稿: ["提交策略测试"],
+  策略测试中: ["测试通过", "测试失败", "标记失效"],
+  已启用: ["标记失效"],
+  已失效: ["提交策略测试"],
+}
 
 const rows = ref<Row[]>([])
 const total = ref(0)
 const errorMessage = ref('')
 const filters = ref<Record<string, string>>({})
 const filterFields = columns.slice(0, 3)
+
+const stats = reactive([
+  { label: '对抗策略总数', value: 0 },
+  { label: '已启用策略', value: 0 },
+  { label: '策略测试中', value: 0 },
+])
+
+function rowActions(row: Row): string[] {
+  const served = row['可执行动作']
+  if (Array.isArray(served)) {
+    return served.map(String)
+  }
+  return statusActions[String(row.status ?? '')] ?? []
+}
+
+function configBlockers(row: Row): string[] {
+  const served = row['配置阻断原因']
+  return Array.isArray(served) ? served.map(String) : []
+}
+
+function statusClass(row: Row) {
+  const status = String(row.status ?? '')
+  return status === '已启用' ? 'status-ok' : status === '已失效' ? 'status-bad' : 'status-wait'
+}
 
 function resetFilters() {
   filters.value = {}
@@ -96,13 +131,21 @@ function openCreate() {
 
 async function runAction(action: string, row: Row) {
   errorMessage.value = ''
+  const values: Record<string, unknown> = { action }
+  if (action === '测试失败' || action === '标记失效') {
+    const reason = window.prompt('请填写测试失败原因（失败结果必须保留原因）', '')
+    if (reason) {
+      values['测试失败原因'] = reason
+    }
+  }
   try {
     const response = await request(`${ENDPOINT}/${row.id}/actions`, {
       method: 'POST',
-      body: JSON.stringify({ action }),
+      body: JSON.stringify({ values }),
     })
-    if (!response.ok) {
-      throw new Error('反爬对抗动作未生效，请稍后重试')
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.message || '反爬对抗动作未生效，请稍后重试')
     }
     await reload()
   } catch (error) {
@@ -119,8 +162,12 @@ async function reload() {
       throw new Error('对抗策略列表读取失败')
     }
     const payload = await response.json()
-    rows.value = payload.items ?? []
-    total.value = payload.total ?? rows.value.length
+    const items: Row[] = payload.items ?? []
+    rows.value = items
+    total.value = payload.total ?? items.length
+    stats[0].value = total.value
+    stats[1].value = items.filter((row) => String(row.status) === '已启用').length
+    stats[2].value = items.filter((row) => String(row.status) === '策略测试中').length
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '反爬对抗列表读取失败'
   }

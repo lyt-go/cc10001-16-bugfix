@@ -33,3 +33,10 @@ body { margin: 0; background: #f6f8fb; color: #1f2937; }
 .link { border: none; background: none; color: var(--brand); cursor: pointer; padding: 0; }
 .page-foot { display: flex; justify-content: space-between; margin-top: 8px; font-size: 12px; color: var(--muted); }
 .error-text { color: #b42318; }
+.muted { color: var(--muted); }
+.status-cell { font-weight: 600; }
+.status-ok { color: #067647; }
+.status-wait { color: #b54708; }
+.status-bad { color: #b42318; }
+.reason-cell { max-width: 320px; color: #475467; }
+.link:disabled { color: var(--muted); cursor: not-allowed; text-decoration: line-through; }
